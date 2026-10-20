@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Read It To Me</title>
+<style>
+:root{--bg:#f6f4ef;--card:#fff;--ink:#1f2430;--muted:#6b7280;--accent:#3b5bdb;--accent-ink:#fff;--hl:#ffe58a;--line:#e3dfd5;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15171c;--card:#1f232b;--ink:#eceef3;--muted:#9aa1b0;--accent:#7c93ff;--accent-ink:#10131a;--hl:#5b4b00;--line:#2e333d}}
+:root[data-theme="dark"]{--bg:#15171c;--card:#1f232b;--ink:#eceef3;--muted:#9aa1b0;--accent:#7c93ff;--accent-ink:#10131a;--hl:#5b4b00;--line:#2e333d}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:20px 16px 120px}
+h1{font-size:26px;margin:8px 0 4px}
+p.sub{margin:0 0 16px;color:var(--muted)}
+.drop{display:block;border:2px dashed var(--line);background:var(--card);border-radius:16px;padding:28px 16px;text-align:center;cursor:pointer}
+.drop.over{border-color:var(--accent)}
+.drop b{display:block;font-size:18px;margin-bottom:4px}
+.drop span{color:var(--muted);font-size:14px}
+input[type=file]{display:none}
+textarea{width:100%;min-height:90px;margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--card);color:var(--ink);font:inherit;resize:vertical}
+button,select{font:inherit;color:var(--ink)}
+.btn{border:0;border-radius:12px;padding:12px 18px;background:var(--accent);color:var(--accent-ink);font-weight:600;cursor:pointer}
+.btn.alt{background:var(--card);color:var(--ink);border:1px solid var(--line)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+#status{margin-top:10px;color:var(--muted);font-size:14px;min-height:20px}
+.panel{margin-top:18px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;font-size:18px;line-height:1.7;max-height:55vh;overflow-y:auto}
+.panel span{cursor:pointer;border-radius:4px}
+.panel span.on{background:var(--hl)}
+.ctl{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px))}
+.ctl .in{max-width:720px;margin:0 auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ctl select{flex:1;min-width:120px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg)}
+label.rate{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--muted)}
+input[type=range]{width:90px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>🔊 Read It To Me</h1>
+  <p class="sub">Upload a Pages, PDF or text file, or paste text, and your device will read it aloud.</p>
+
+  <label class="drop" id="drop" for="file">
+    <b>Tap to choose a file</b>
+    <span>Pages, PDF or text files (or drag one here)</span>
+  </label>
+  <input type="file" id="file">
+
+  <textarea id="paste" placeholder="…or paste text here"></textarea>
+  <div class="row"><button class="btn alt" id="usePaste">Use pasted text</button></div>
+  <div id="status"></div>
+
+  <div class="panel hide" id="panel"></div>
+</main>
+
+<div class="ctl hide" id="ctl">
+  <div class="in">
+    <button class="btn" id="play">▶ Play</button>
+    <button class="btn alt" id="stop">■ Stop</button>
+    <label class="rate">Speed <input type="range" id="rate" min="0.6" max="2" step="0.1" value="1"><span id="rv">1.0×</span></label>
+    <select id="voice" aria-label="Voice"></select>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id)};
+  var synth=window.speechSynthesis;
+  var sentences=[],spans=[],idx=0,playing=false,token=0,voices=[];
+  var status=$('status');
+  var docName='';
+
+  /* Background playback: a silent looping audio track plus Media Session controls */
+  var keep=document.createElement('audio');keep.loop=true;keep.setAttribute('playsinline','');
+  (function(){
+    var sr=8000,n=sr,buf=new ArrayBuffer(44+n),dv=new DataView(buf);
+    function w(o,s){for(var i=0;i<s.length;i++)dv.setUint8(o+i,s.charCodeAt(i))}
+    w(0,'RIFF');dv.setUint32(4,36+n,true);w(8,'WAVEfmt ');dv.setUint32(16,16,true);dv.setUint16(20,1,true);dv.setUint16(22,1,true);dv.setUint32(24,sr,true);dv.setUint32(28,sr,true);dv.setUint16(32,1,true);dv.setUint16(34,8,true);w(36,'data');dv.setUint32(40,n,true);
+    for(var i=0;i<n;i++)dv.setUint8(44+i,128+(i%2));
+    keep.src=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
+  })();
+  function setupMedia(){
+    if(!('mediaSession' in navigator))return;
+    try{
+      navigator.mediaSession.metadata=new MediaMetadata({title:docName||'Read It To Me',artist:'Read It To Me'});
+      navigator.mediaSession.setActionHandler('play',function(){play(idx)});
+      navigator.mediaSession.setActionHandler('pause',function(){pause()});
+      navigator.mediaSession.setActionHandler('stop',function(){stop()});
+      navigator.mediaSession.setActionHandler('previoustrack',function(){play(Math.max(0,idx-1))});
+      navigator.mediaSession.setActionHandler('nexttrack',function(){play(Math.min(sentences.length-1,idx+1))});
+    }catch(e){}
+  }
+  function startKeep(){
+    try{var pr=keep.play();if(pr&&pr.catch)pr.catch(function(){})}catch(e){}
+    setupMedia();
+    if('mediaSession' in navigator)navigator.mediaSession.playbackState='playing';
+  }
+  function stopKeep(){
+    try{keep.pause()}catch(e){}
+    if('mediaSession' in navigator)navigator.mediaSession.playbackState='paused';
+  }
+
+  if(!synth){status.textContent='Sorry, this browser doesn’t support speech. Try Chrome, Safari or Edge.'}
+  if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}
+
+  function loadVoices(){
+    if(!synth)return;
+    voices=synth.getVoices();
+    var sel=$('voice'),cur=sel.value;sel.innerHTML='';
+    voices.forEach(function(v,i){var o=document.createElement('option');o.value=i;o.textContent=v.name+' ('+v.lang+')';sel.appendChild(o)});
+    var pick=voices.findIndex(function(v){return /^en/i.test(v.lang)&&v.default});
+    if(pick<0)pick=voices.findIndex(function(v){return /^en/i.test(v.lang)});
+    sel.value=cur||(pick>=0?pick:0);
+  }
+  if(synth){loadVoices();synth.onvoiceschanged=loadVoices}
+
+  function split(text){
+    text=text.replace(/\s+/g,' ').trim();
+    var raw=text.match(/[^.!?]+[.!?]+["”’)]*|[^.!?]+$/g)||[];
+    var out=[];
+    raw.forEach(function(s){
+      s=s.trim();
+      while(s.length>260){
+        var cut=s.lastIndexOf(',',260);if(cut<80)cut=s.lastIndexOf(' ',260);if(cut<1)cut=260;
+        out.push(s.slice(0,cut+1).trim());s=s.slice(cut+1).trim();
+      }
+      if(s)out.push(s);
+    });
+    return out;
+  }
+
+  function show(text,name){
+    stop();docName=name||'';
+    sentences=split(text);
+    var panel=$('panel');panel.innerHTML='';spans=[];
+    if(!sentences.length){status.textContent='No readable text found in that file.';panel.classList.add('hide');$('ctl').classList.add('hide');return}
+    sentences.forEach(function(s,i){
+      var sp=document.createElement('span');sp.textContent=s+' ';
+      sp.onclick=function(){play(i)};
+      panel.appendChild(sp);spans.push(sp);
+    });
+    panel.classList.remove('hide');$('ctl').classList.remove('hide');
+    status.textContent=(name?name+' – ':'')+sentences.length+' sentences ready. Tap Play, or tap any sentence to start there.';
+    idx=0;
+  }
+
+  function mark(){
+    spans.forEach(function(s,i){s.classList.toggle('on',i===idx&&(playing||true)&&i===idx)});
+    if(spans[idx])spans[idx].scrollIntoView({block:'center',behavior:'smooth'});
+  }
+
+  function next(t){
+    if(t!==token)return;
+    if(idx>=sentences.length){playing=false;stopKeep();setBtn();spans.forEach(function(s){s.classList.remove('on')});idx=0;return}
+    mark();
+    var u=new SpeechSynthesisUtterance(sentences[idx]);
+    var v=voices[$('voice').value];if(v){u.voice=v;u.lang=v.lang}
+    u.rate=parseFloat($('rate').value);
+    u.onend=function(){if(t===token){idx++;next(t)}};
+    u.onerror=function(e){if(t===token&&e.error!=='interrupted'&&e.error!=='canceled'){playing=false;setBtn()}};
+    synth.speak(u);
+  }
+
+  function play(from){
+    if(!synth||!sentences.length)return;
+    if(typeof from==='number')idx=from;
+    synth.cancel();token++;playing=true;startKeep();setBtn();next(token);
+  }
+  function pause(){token++;playing=false;synth.cancel();stopKeep();setBtn()}
+  function stop(){
+    token++;playing=false;if(synth)synth.cancel();stopKeep();idx=0;setBtn();
+    spans.forEach(function(s){s.classList.remove('on')});
+  }
+  function setBtn(){$('play').textContent=playing?'❚❚ Pause':'▶ Play'}
+
+  $('play').onclick=function(){playing?pause():play()};
+  $('stop').onclick=stop;
+  $('rate').oninput=function(){
+    $('rv').textContent=parseFloat(this.value).toFixed(1)+'×';
+    if(playing)play(idx);
+  };
+  $('voice').onchange=function(){if(playing)play(idx)};
+  $('usePaste').onclick=function(){
+    var t=$('paste').value;
+    if(!t.trim()){status.textContent='Paste some text first.';return}
+    show(t,'Pasted text');
+  };
+
+  function readPdf(buf,name){
+    if(!window.pdfjsLib){status.textContent='The PDF reader couldn’t load. Check your connection and refresh.';return}
+    status.textContent='Reading PDF…';
+    pdfjsLib.getDocument({data:buf}).promise.then(function(pdf){
+      var n=pdf.numPages,parts=[],p=Promise.resolve();
+      for(let i=1;i<=n;i++){
+        p=p.then(function(){return pdf.getPage(i)}).then(function(pg){return pg.getTextContent()}).then(function(c){
+          parts.push(c.items.map(function(it){return it.str}).join(' '));
+          status.textContent='Reading PDF… page '+i+' of '+n;
+        });
+      }
+      return p.then(function(){
+        var text=parts.join('\n\n');
+        if(text.replace(/\s/g,'').length<5){status.textContent='This PDF looks like scanned images with no selectable text, so it can’t be read aloud.';return}
+        show(text,name);
+      });
+    }).catch(function(){status.textContent='Sorry, I couldn’t open that PDF.'});
+  }
+
+  function snappy(b){
+    var i=0,s=0,c,n=0;
+    do{c=b[i++];n|=(c&127)<<s;s+=7}while(c&128);
+    var o=new Uint8Array(n),p=0;
+    while(i<b.length){
+      var t=b[i++],k=t&3,l,off;
+      if(k===0){
+        l=t>>2;
+        if(l>=60){var nb=l-59;l=0;for(var j=0;j<nb;j++)l|=b[i+j]<<(8*j);i+=nb}
+        l++;o.set(b.subarray(i,i+l),p);p+=l;i+=l;
+      }else{
+        if(k===1){l=((t>>2)&7)+4;off=((t>>5)<<8)|b[i++]}
+        else if(k===2){l=(t>>2)+1;off=b[i]|(b[i+1]<<8);i+=2}
+        else{l=(t>>2)+1;off=b[i]|(b[i+1]<<8)|(b[i+2]<<16)|(b[i+3]<<24);i+=4}
+        for(var q=0;q<l;q++){o[p]=o[p-off];p++}
+      }
+    }
+    return o;
+  }
+
+  function readPages(buf,name){
+    if(!window.JSZip){status.textContent='The Pages reader couldn’t load. Check your connection and refresh.';return}
+    status.textContent='Opening Pages file…';
+    JSZip.loadAsync(buf).then(function(z){
+      var f=z.file('Index/Document.iwa');if(!f)throw new Error('no doc');
+      return f.async('uint8array');
+    }).then(function(d){
+      var chunks=[],i=0,tot=0;
+      while(i+4<=d.length){
+        var ln=d[i+1]|(d[i+2]<<8)|(d[i+3]<<16);i+=4;
+        var c=snappy(d.subarray(i,i+ln));chunks.push(c);tot+=c.length;i+=ln;
+      }
+      var all=new Uint8Array(tot),p=0;
+      chunks.forEach(function(c){all.set(c,p);p+=c.length});
+      var str=new TextDecoder('utf-8').decode(all);
+      var runs=str.match(/[\x20-\x7e\n\t\u00a0-\u024f\u2013-\u201d\u2026]{20,}/g)||[];
+      var good=runs.filter(function(r){
+        var letters=(r.match(/[A-Za-z]/g)||[]).length;
+        return (r.match(/ /g)||[]).length>=3&&letters/r.length>0.6&&!/iiii/.test(r)&&!/^(Application|\$?[0-9A-F]{8}-)/.test(r);
+      });
+      var text=good.join('\n\n');
+      if(text.length<10){status.textContent='I couldn’t find readable text in that Pages file. Try exporting it to PDF.';return}
+      show(text,name);
+    }).catch(function(){status.textContent='Sorry, I couldn’t open that Pages file. Try exporting it to PDF instead.'});
+  }
+
+  function handle(f){
+    if(!f)return;
+    var n=f.name.toLowerCase();
+    if(n.endsWith('.pdf')||f.type==='application/pdf'){
+      var r=new FileReader();r.onload=function(){readPdf(new Uint8Array(r.result),f.name)};r.readAsArrayBuffer(f);
+    }else if(n.endsWith('.pages')){
+      var r3=new FileReader();r3.onload=function(){readPages(new Uint8Array(r3.result),f.name)};r3.readAsArrayBuffer(f);
+    }else if(n.endsWith('.txt')||f.type==='text/plain'){
+      var r2=new FileReader();r2.onload=function(){show(r2.result,f.name)};r2.readAsText(f);
+    }else{
+      status.textContent='Please choose a Pages, PDF or .txt file.';
+    }
+  }
+  $('file').onchange=function(){handle(this.files[0])};
+  var drop=$('drop');
+  ['dragenter','dragover'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.add('over')})});
+  ['dragleave','drop'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.remove('over')})});
+  drop.addEventListener('drop',function(ev){handle(ev.dataTransfer.files[0])});
+  document.addEventListener('visibilitychange',function(){
+    if(!document.hidden&&playing&&synth&&!synth.speaking)play(idx);
+  });
+  window.addEventListener('beforeunload',function(){if(synth)synth.cancel()});
+})();
+</script>
+</body>
+</html>
